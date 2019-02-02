@@ -1,0 +1,46 @@
+#! /bin/bash
+
+badpods=$(kubectl get po --all-namespaces -o json | jq -r '.items[] | select(.status.containerStatuses[0]?.state?.waiting?.reason?=="CreateContainerConfigError") | "\(.metadata.namespace)/\(.metadata.labels.app)/\(.metadata.name)"')
+
+for pod in ${badpods}
+do
+    # echo "$pod"
+    namespace=$(echo $pod | cut -d '/' -f1)
+    app=$(echo $pod | cut -d '/' -f2)
+    name=$(echo $pod | cut -d '/' -f3)
+
+    owner=$(kubectl -n $namespace get po $name -o json | jq -r '.metadata.ownerReferences[0]?')
+    if [ -z "$owner" ]
+    then
+      echo "no owner"
+      continue
+    fi
+    ownerkey=$(echo "$owner" | jq -r '"\(.kind)/\(.name)"')
+    ownerkind=$(echo "$ownerkey" | cut -d '/' -f1)
+    ownername=$(echo "$ownerkey" | cut -d '/' -f2)
+    # echo "owner kind: $ownerkind name: $ownername"
+    if [ "$ownerkind" != "ReplicaSet" ]
+    then
+        echo "Expected ReplicaSet ${namespace}/${ownername}. Skipping..."
+        continue
+    fi
+    owner=$(kubectl -n $namespace get $ownerkind $ownername -o json | jq -r '.metadata.ownerReferences[0]?')
+    if [ -z "$owner" ]
+    then
+      echo "no owner"
+      continue
+    fi
+    # echo "Second-level owner"
+    ownerkey=$(echo "$owner" | jq -r '"\(.kind)/\(.name)"')
+    # echo "$ownerkey"
+    ownerkind=$(echo "$ownerkey" | cut -d '/' -f1)
+    ownername=$(echo "$ownerkey" | cut -d '/' -f2)
+    # echo "owner kind: $ownerkind name: $ownername"
+    if [ "$ownerkind" != "Deployment" ]
+    then
+        echo "Expected Deployment ${namespace}/${ownername}. Skipping..."
+        continue
+    fi
+    app=$(kubectl -n $namespace get $ownerkind $ownername -o json | jq -r '.metadata.labels.app')
+    ./fix-config-env.sh $namespace $app $ownername
+done
